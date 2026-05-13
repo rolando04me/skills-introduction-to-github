@@ -8,12 +8,14 @@
 - Owner: `9okxe` (user ID `1216920352211468318`)
 
 ## Bot setup
-- Bot in server: `ClaudeWorker` (role position 65, has Administrator)
+- Bot user: `ClaudeWorker` (ID `1503930559783764149`, verified, MFA on)
+- Bot's managed role in server: **`PGB Assistant`** (ID `1503931562297790599`, position **69**, Administrator perms `8`, mentionable)
 - Token + Guild ID stored in `.env` and mirrored into `.mcp.json`
+- **Heads up:** `Kidnapped Developer` (bot ID `1312937200404529224`) sits at position **70** — above us. We can't manage that role or anything that requires outranking it.
 
 ## Role structure (top → bottom)
 - Top bots: Kidnapped Developer, ClaudeWorker, Wick, Quarantine, Circle
-- `-------- STAFF`: ✦ OWNER ✦, Moderator (new, red, hoisted), Claude Specialty
+- `-------- STAFF`: ✦ OWNER ✦, Moderator (new, red, hoisted), PGB Specialist (was "Claude Specialty")
 - `-------- DEPARTMENTS`: Animators, XE, VFX, SFX, Server Design, ServerStats, PROGRAM, Builder, Scripter, Application Reviewer, Developer, Tester, Cloud Service
 - `-------- COMMUNITY`: Supporter, Giveaway Winner, Community, Pings, Verified, Unverified
 - `-------- SERVER SYSTEMS`: Advance Server Security, Server Bots, ✨, Bloxlink Bypass, Main Server Bot, YouTube, Movie Night Ping
@@ -21,11 +23,13 @@
 - `-------- RANKING ROLES` (untouched — leveling system manages this): EXABYTE → MiniByte hierarchy + XP Boosts
 
 ## Permission model
-- **Moderator role** (red, hoisted, ID needs lookup): full mod perms server-wide + full access to Staffs Only
-- **Developer role**: unified team role for all departments; gets Staffs Only access; no manage perms in random channels
-- **Application Reviewer**: real perms only on `applications-reviews`
-- **Server Bots**: standard utility-bot perms (no Administrator)
-- **Quarantine**: denies everything on every category — punishment role, working correctly
+- **Moderator role** (ID `1503956254467293264`, red `#C02CAB`, hoisted, position 62, perms `111864837433031`): full mod perms server-wide + full access to Staffs Only. Currently 0 members — needs assignment.
+- **Developer role** (ID `1296587530937831514`, position 50, perms `0`): unified team role for all departments; gets Staffs Only access; no manage perms in random channels
+- **Application Reviewer** (ID `1503871032849727538`, position 51): real perms only on `applications-reviews`
+- **Server Bots** (ID `1296664890638991422`, position 35, perms `277025778753`): standard utility-bot perms (no Administrator)
+- **Quarantine** (ID `1339066160293085285`, position 67): denies everything on every category — punishment role, working correctly
+- **PGB Specialist** (ID `1503935946666803281`, position 63, hoisted, perms `0`): zero permissions — needs to be defined or removed
+- **Advance Server Security** (ID `1339068827643936789`, position 36, hoisted, perms `0`): zero permissions — same issue
 
 ## Known MCP bug — `set_channel_permissions` can't clear overrides
 The MCP tool reports success but doesn't actually remove an override entry — it only modifies allows/denies. Empty arrays don't persist.
@@ -74,7 +78,7 @@ The Claude Code auto-mode classifier blocks:
 ## Pending — pickup work
 - Onboarding "raise" prompt broken (both Yes/No award `✨` role)
 - `#📋┃dashboard` "Under Construction" since Dec 2024
-- `Advance Server Security` and `Claude Specialty` roles have 0 perms
+- `Advance Server Security` and `PGB Specialist` roles have 0 perms
 - ✨ role still has 11 members and no purpose
 - Bulletin sub-channels still have legacy per-channel overrides duplicating category settings
 
@@ -82,7 +86,14 @@ The Claude Code auto-mode classifier blocks:
 
 ### 2026-05-13 — Initial setup
 - Created `.gitignore`, `.env`, `.mcp.json`, `CLAUDE.md`
-- Next: activate `/mcp` and verify guild connection
+- Verified bot connection via direct REST API (`/mcp` not available in environment — need Claude Code restart to load typed MCP tools)
+- Confirmed: bot `ClaudeWorker` reaches guild `PGB Studios(W.I.P)` (26 members)
+- Discovered/corrected:
+  - Moderator role ID = `1503956254467293264` (was "needs lookup")
+  - Bot's managed role is **PGB Assistant** at position **69**, not "ClaudeWorker at 65"
+  - "Claude Specialty" was renamed to **PGB Specialist** (ID `1503935946666803281`)
+  - `Kidnapped Developer` is at position **70** — above us, so we can't manage it
+- Next: restart Claude Code, approve discord MCP, pick task
 
 ## How to resume
 1. Read this file fully.
