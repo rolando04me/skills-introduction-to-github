@@ -593,6 +593,25 @@ const CALC_TYPES = {
       distractors: [(s.bac - s.ac) / (s.bac - s.ev), s.ev / s.ac, (s.bac - s.ev) / (s.bac - s.ev + s.ac), v + 0.1, v - 0.1],
       explanation: `TCPI = (BAC − EV) / (BAC − AC) = (${money(s.bac)} − ${money(s.ev)}) / (${money(s.bac)} − ${money(s.ac)}) = ${round2(v).toFixed(2)}. ${v <= 1 ? "≤1 → alcanzable." : ">1 → exige mayor eficiencia."}` });
   },
+  EAC_CPISPI: (s) => {
+    const cpi = s.ev / s.ac;
+    const spi = s.ev / s.pv;
+    const v = s.ac + (s.bac - s.ev) / (cpi * spi);
+    if (!isFinite(v)) return CALC_TYPES.EAC(s);
+    return buildMC({ scenario: s, fmt: "$",
+      prompt: `BAC = ${money(s.bac)}, EV = ${money(s.ev)}, AC = ${money(s.ac)}, PV = ${money(s.pv)}. Si TANTO el costo como el cronograma afectan el trabajo restante, ¿cuál es la EAC?`,
+      correct: v,
+      distractors: [s.bac / cpi, s.ac + (s.bac - s.ev), s.bac * cpi, s.ac + (s.bac - s.ev) / cpi, v + 100, v - 100],
+      explanation: `EAC = AC + (BAC − EV) / (CPI × SPI). CPI = ${round2(cpi).toFixed(2)}, SPI = ${round2(spi).toFixed(2)}; EAC = ${money(s.ac)} + (${money(s.bac)} − ${money(s.ev)}) / (${round2(cpi).toFixed(2)} × ${round2(spi).toFixed(2)}) = ${money(v)}.` });
+  },
+  EAC_BU: (s) => {
+    const v = s.ac + (s.bac - s.ev);
+    return buildMC({ scenario: s, fmt: "$",
+      prompt: `BAC = ${money(s.bac)}, EV = ${money(s.ev)}, AC = ${money(s.ac)}. Si el trabajo restante se completará al ritmo PLANEADO (la desviación fue puntual), ¿cuál es la EAC?`,
+      correct: v,
+      distractors: [s.bac - s.ev, s.ac + s.ev, s.bac / (s.ev / s.ac), s.bac - s.ac, v + 100, v - 100],
+      explanation: `EAC = AC + (BAC − EV) = ${money(s.ac)} + (${money(s.bac)} − ${money(s.ev)}) = ${money(v)}. Se usa cuando las variaciones pasadas NO se repetirán (trabajo restante al costo presupuestado).` });
+  },
 };
 
 /* Preguntas conceptuales / de interpretación (también con valores variables). */
@@ -646,21 +665,41 @@ const CONCEPT_TYPES = {
       options: shuffle(options),
       explanation: `Costo: compara EV vs AC → ${overBudget ? "AC > EV = sobre presupuesto" : "EV ≥ AC = bajo/en presupuesto"}. Cronograma: compara EV vs PV → ${behind ? "EV < PV = atrasado" : "EV ≥ PV = en plan/adelantado"}.` };
   },
+  EAC_WHICH: () => {
+    const cases = [
+      { ctx: "el desempeño de costo actual (CPI) continuará igual el resto del proyecto", a: "EAC = BAC / CPI",
+        why: "Es el escenario más común: las eficiencias actuales se mantienen." },
+      { ctx: "la variación fue un evento puntual y el trabajo restante seguirá el plan original", a: "EAC = AC + (BAC − EV)",
+        why: "El trabajo restante se valora al costo presupuestado (bottom-up simple)." },
+      { ctx: "tanto el costo (CPI) como el cronograma (SPI) seguirán afectando el trabajo restante", a: "EAC = AC + (BAC − EV) / (CPI × SPI)",
+        why: "Penaliza por ambos factores combinados." },
+    ];
+    const item = pick(cases);
+    const all = ["EAC = BAC / CPI", "EAC = AC + (BAC − EV)", "EAC = AC + (BAC − EV) / (CPI × SPI)", "EAC = BAC × CPI"];
+    const options = shuffle(all.map(t => ({ text: t, correct: t === item.a })));
+    return { scenario: null, prompt: `Si se asume que ${item.ctx}, ¿qué fórmula de EAC corresponde?`, options,
+      explanation: `Correcta: ${item.a}. ${item.why}` };
+  },
 };
 
 /* Pools de tipos por dificultad. */
 const POOLS = {
   1: ["CV", "SV", "CPI", "SPI", "CONCEPT_FORMULA", "CONCEPT_MEANING"],
-  2: ["CPI", "SPI", "EAC", "ETC", "VAC", "CONCEPT_MEANING", "CONCEPT_STATUS"],
-  3: ["EAC", "ETC", "VAC", "TCPI", "CONCEPT_STATUS", "CV", "SV", "CPI", "SPI"],
+  2: ["CPI", "SPI", "EAC", "ETC", "VAC", "EAC_BU", "CONCEPT_MEANING", "CONCEPT_STATUS", "CONCEPT_EAC_WHICH"],
+  3: ["EAC", "ETC", "VAC", "TCPI", "EAC_CPISPI", "EAC_BU", "CONCEPT_STATUS", "CONCEPT_EAC_WHICH", "CV", "SV", "CPI", "SPI"],
+};
+
+const CONCEPT_MAP = {
+  CONCEPT_FORMULA: CONCEPT_TYPES.FORMULA,
+  CONCEPT_MEANING: CONCEPT_TYPES.MEANING,
+  CONCEPT_STATUS: CONCEPT_TYPES.STATUS,
+  CONCEPT_EAC_WHICH: CONCEPT_TYPES.EAC_WHICH,
 };
 
 function generateOne(diff) {
   const pool = POOLS[diff] || POOLS[1];
   const type = pick(pool);
-  if (type === "CONCEPT_FORMULA") return CONCEPT_TYPES.FORMULA();
-  if (type === "CONCEPT_MEANING") return CONCEPT_TYPES.MEANING();
-  if (type === "CONCEPT_STATUS") return CONCEPT_TYPES.STATUS();
+  if (CONCEPT_MAP[type]) return CONCEPT_MAP[type]();
   return CALC_TYPES[type](makeScenario(diff));
 }
 
@@ -684,6 +723,22 @@ const LEVELS = [
   { id: "final", name: "Simulacro Final", color: COLORS.purple, desc: "10 preguntas mezcladas de todos los niveles. ¡El examen!" },
 ];
 
+/* ---- Historial de puntajes (localStorage, con degradado seguro) ---- */
+const SCORES_KEY = "evm_best_scores";
+function loadScores() {
+  try { return JSON.parse(localStorage.getItem(SCORES_KEY)) || {}; }
+  catch (e) { return {}; }
+}
+function saveBest(levelId, score) {
+  try {
+    const all = loadScores();
+    const prev = all[levelId] ?? -1;
+    if (score > prev) { all[levelId] = score; localStorage.setItem(SCORES_KEY, JSON.stringify(all)); return true; }
+  } catch (e) { /* ignora si file:// bloquea storage */ }
+  return false;
+}
+function clearScores() { try { localStorage.removeItem(SCORES_KEY); } catch (e) {} }
+
 /* ============================================================
  * SIMULADOR DE EXAMEN
  * ========================================================== */
@@ -693,38 +748,69 @@ function fmtTime(sec) {
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
+const TIME_LIMIT = 600; // 60s × 10 preguntas
+
 function ExamSimulator() {
   const [phase, setPhase] = useState("menu"); // menu | quiz | results
   const [level, setLevel] = useState(null);
   const [questions, setQuestions] = useState([]);
   const [current, setCurrent] = useState(0);
-  const [answers, setAnswers] = useState([]); // índice de opción elegida por pregunta
+  const [answers, setAnswers] = useState([]);   // índice de opción elegida por pregunta
+  const [revealed, setRevealed] = useState([]); // modo estudio: pregunta ya revelada
   const [elapsed, setElapsed] = useState(0);
-  const timerRef = useRef(null);
+  const [timeLeft, setTimeLeft] = useState(TIME_LIMIT);
+
+  // Ajustes (persisten durante la sesión)
+  const [quizMode, setQuizMode] = useState("exam"); // exam | study
+  const [timed, setTimed] = useState(false);
+
+  // Récords
+  const [bestScores, setBestScores] = useState(loadScores);
+  const [isNewRecord, setIsNewRecord] = useState(false);
 
   const startLevel = (lvl) => {
     setLevel(lvl);
     setQuestions(generateQuiz(lvl.id));
     setAnswers(new Array(10).fill(null));
+    setRevealed(new Array(10).fill(false));
     setCurrent(0);
     setElapsed(0);
+    setTimeLeft(TIME_LIMIT);
+    setIsNewRecord(false);
     setPhase("quiz");
   };
 
-  // Temporizador
+  // finishRef siempre apunta a la versión más reciente (lee questions/answers actuales)
+  const finishRef = useRef(() => {});
+  finishRef.current = () => {
+    const sc = questions.reduce((a, q, i) => a + (answers[i] != null && q.options[answers[i]].correct ? 1 : 0), 0);
+    const rec = saveBest(level.id, sc);
+    setIsNewRecord(rec);
+    setBestScores(loadScores());
+    setPhase("results");
+  };
+  const finish = () => finishRef.current();
+
+  // Temporizador: cuenta atrás si es contrarreloj, hacia arriba si no.
   useEffect(() => {
-    if (phase === "quiz") {
-      timerRef.current = setInterval(() => setElapsed(e => e + 1), 1000);
-      return () => clearInterval(timerRef.current);
+    if (phase !== "quiz") return;
+    if (timed) {
+      const id = setInterval(() => {
+        setTimeLeft(t => {
+          if (t <= 1) { clearInterval(id); finishRef.current(); return 0; }
+          return t - 1;
+        });
+      }, 1000);
+      return () => clearInterval(id);
     }
-  }, [phase]);
+    const id = setInterval(() => setElapsed(e => e + 1), 1000);
+    return () => clearInterval(id);
+  }, [phase, timed]);
 
   const choose = (optIdx) => {
-    setAnswers(prev => {
-      const copy = [...prev];
-      copy[current] = optIdx;
-      return copy;
-    });
+    if (quizMode === "study" && revealed[current]) return; // bloqueado tras revelar
+    setAnswers(prev => { const c = [...prev]; c[current] = optIdx; return c; });
+    if (quizMode === "study") setRevealed(prev => { const c = [...prev]; c[current] = true; return c; });
   };
 
   const score = useMemo(() => {
@@ -736,9 +822,23 @@ function ExamSimulator() {
 
   /* ---------- MENÚ ---------- */
   if (phase === "menu") {
+    const Toggle = ({ label, options, value, onChange }) => (
+      <div style={{ display: "flex", alignItems: "center", gap: 8, justifyContent: "space-between" }}>
+        <span style={{ color: COLORS.textMuted, fontSize: 12, fontWeight: 600 }}>{label}</span>
+        <div style={{ display: "flex", gap: 4, background: COLORS.bg, borderRadius: 999, padding: 3 }}>
+          {options.map(o => (
+            <button key={String(o.val)} onClick={() => onChange(o.val)} style={{
+              background: value === o.val ? COLORS.ev : "transparent",
+              color: value === o.val ? "#fff" : COLORS.textMuted,
+              border: "none", borderRadius: 999, padding: "5px 14px", fontSize: 12, fontWeight: 700,
+              cursor: "pointer", fontFamily: DISPLAY }}>{o.label}</button>
+          ))}
+        </div>
+      </div>
+    );
     return (
       <div>
-        <div style={{ marginBottom: 18, textAlign: "center" }}>
+        <div style={{ marginBottom: 16, textAlign: "center" }}>
           <h2 style={{ fontFamily: DISPLAY, fontSize: 22, fontWeight: 700, margin: 0, letterSpacing: "-0.02em",
             background: `linear-gradient(135deg, ${COLORS.cyan}, ${COLORS.purple})`, WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>
             Simulador de Examen EVM
@@ -747,25 +847,49 @@ function ExamSimulator() {
             Elige un nivel. 10 preguntas aleatorias por intento — práctica infinita.
           </p>
         </div>
-        <div style={{ display: "grid", gap: 10 }}>
-          {LEVELS.map(lvl => (
-            <button key={lvl.id} onClick={() => startLevel(lvl)} style={{
-              textAlign: "left", background: COLORS.card, color: COLORS.text, border: `1px solid ${COLORS.border}`,
-              borderLeft: `4px solid ${lvl.color}`, borderRadius: 10, padding: "14px 16px", cursor: "pointer" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <span style={{ fontFamily: DISPLAY, fontSize: 16, fontWeight: 700, color: lvl.color }}>{lvl.name}</span>
-                <span style={{ fontSize: 11, color: COLORS.textMuted, fontFamily: MONO }}>10 preguntas →</span>
-              </div>
-              <div style={{ color: COLORS.textMuted, fontSize: 12, marginTop: 4 }}>{lvl.desc}</div>
-            </button>
-          ))}
-        </div>
-        <div style={{ marginTop: 16, padding: "10px 14px", background: COLORS.card, borderRadius: 10, border: `1px dashed ${COLORS.border}` }}>
-          <div style={{ color: COLORS.cyan, fontSize: 11, fontWeight: 700, textTransform: "uppercase", marginBottom: 6 }}>Cómo funciona</div>
-          <div style={{ color: COLORS.textMuted, fontSize: 12, lineHeight: 1.6 }}>
-            Responde las 10 preguntas (opción múltiple). Al final ves tu puntaje, aprobado/reprobado (umbral 70%)
-            y la explicación paso a paso de cada una. Reintenta para generar 10 preguntas nuevas.
+
+        {/* Ajustes */}
+        <div style={{ display: "grid", gap: 10, background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: "12px 14px", marginBottom: 14 }}>
+          <Toggle label="Modo" value={quizMode} onChange={setQuizMode}
+            options={[{ val: "exam", label: "📝 Examen" }, { val: "study", label: "📚 Estudio" }]} />
+          <Toggle label="Contrarreloj" value={timed} onChange={setTimed}
+            options={[{ val: false, label: "Off" }, { val: true, label: `On · ${fmtTime(TIME_LIMIT)}` }]} />
+          <div style={{ color: COLORS.textMuted, fontSize: 11, lineHeight: 1.5, opacity: 0.85 }}>
+            {quizMode === "study"
+              ? "Estudio: ves si acertaste y la explicación al instante, tras responder."
+              : "Examen: respondes todas y ves la corrección al final."}
+            {timed ? ` Contrarreloj: ${fmtTime(TIME_LIMIT)} en total; se entrega solo al agotarse.` : ""}
           </div>
+        </div>
+
+        <div style={{ display: "grid", gap: 10 }}>
+          {LEVELS.map(lvl => {
+            const best = bestScores[lvl.id];
+            return (
+              <button key={lvl.id} onClick={() => startLevel(lvl)} style={{
+                textAlign: "left", background: COLORS.card, color: COLORS.text, border: `1px solid ${COLORS.border}`,
+                borderLeft: `4px solid ${lvl.color}`, borderRadius: 10, padding: "14px 16px", cursor: "pointer" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <span style={{ fontFamily: DISPLAY, fontSize: 16, fontWeight: 700, color: lvl.color }}>{lvl.name}</span>
+                  <span style={{ fontSize: 11, color: COLORS.textMuted, fontFamily: MONO }}>
+                    {best != null && <span style={{ color: COLORS.green, marginRight: 8 }}>🏆 Mejor: {best}/10</span>}
+                    10 preguntas →
+                  </span>
+                </div>
+                <div style={{ color: COLORS.textMuted, fontSize: 12, marginTop: 4 }}>{lvl.desc}</div>
+              </button>
+            );
+          })}
+        </div>
+
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 14 }}>
+          <span style={{ color: COLORS.textMuted, fontSize: 11 }}>Umbral de aprobado: 70%</span>
+          {Object.keys(bestScores).length > 0 && (
+            <button onClick={() => { clearScores(); setBestScores({}); }} style={{
+              background: "none", border: "none", color: COLORS.textMuted, fontSize: 11, cursor: "pointer", textDecoration: "underline" }}>
+              Borrar historial
+            </button>
+          )}
         </div>
       </div>
     );
@@ -775,6 +899,7 @@ function ExamSimulator() {
   if (phase === "results") {
     const pct = Math.round((score / 10) * 100);
     const passed = pct >= 70;
+    const timeUsed = timed ? (TIME_LIMIT - timeLeft) : elapsed;
     return (
       <div style={{ animation: "pop 0.25s ease" }}>
         <div style={{ textAlign: "center", marginBottom: 16 }}>
@@ -785,7 +910,12 @@ function ExamSimulator() {
           <div style={{ fontSize: 16, fontWeight: 700, color: passed ? COLORS.green : COLORS.red }}>
             {pct}% · {passed ? "APROBADO ✓" : "REPROBADO ✗"}
           </div>
-          <div style={{ fontSize: 12, color: COLORS.textMuted, marginTop: 4 }}>Tiempo: {fmtTime(elapsed)}</div>
+          {isNewRecord && (
+            <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.yellow, marginTop: 4 }}>🏆 ¡Nuevo récord!</div>
+          )}
+          <div style={{ fontSize: 12, color: COLORS.textMuted, marginTop: 4 }}>
+            Tiempo: {fmtTime(timeUsed)}{timed ? ` / ${fmtTime(TIME_LIMIT)}` : ""}
+          </div>
         </div>
 
         <div style={{ background: COLORS.bg, borderRadius: 6, height: 12, overflow: "hidden", marginBottom: 18 }}>
@@ -824,11 +954,19 @@ function ExamSimulator() {
   /* ---------- QUIZ ---------- */
   const q = questions[current];
   const selected = answers[current];
+  const isRevealed = quizMode === "study" && revealed[current];
+  const correctIdx = q.options.findIndex(o => o.correct);
+  const lowTime = timed && timeLeft <= 60;
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-        <span style={{ fontFamily: DISPLAY, fontSize: 14, fontWeight: 700, color: level.color }}>{level.name}</span>
-        <span style={{ fontFamily: MONO, fontSize: 13, color: COLORS.cyan, background: COLORS.card, padding: "2px 10px", borderRadius: 6 }}>⏱ {fmtTime(elapsed)}</span>
+        <span style={{ fontFamily: DISPLAY, fontSize: 14, fontWeight: 700, color: level.color }}>
+          {level.name} {quizMode === "study" && <span style={{ fontSize: 11, color: COLORS.textMuted }}>· 📚 estudio</span>}
+        </span>
+        <span style={{ fontFamily: MONO, fontSize: 13, color: lowTime ? COLORS.red : COLORS.cyan,
+          background: COLORS.card, padding: "2px 10px", borderRadius: 6, fontWeight: lowTime ? 700 : 400 }}>
+          ⏱ {timed ? fmtTime(timeLeft) : fmtTime(elapsed)}{timed ? " ⏳" : ""}
+        </span>
       </div>
 
       <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: COLORS.textMuted, marginBottom: 6 }}>
@@ -846,20 +984,39 @@ function ExamSimulator() {
       <div style={{ display: "grid", gap: 8, marginBottom: 16 }}>
         {q.options.map((o, idx) => {
           const isSel = selected === idx;
+          // Colores en modo estudio tras revelar
+          let borderCol = isSel ? COLORS.cyan : COLORS.border;
+          let bg = isSel ? COLORS.cardAlt : COLORS.card;
+          if (isRevealed) {
+            if (idx === correctIdx) { borderCol = COLORS.green; bg = "rgba(34,197,94,0.12)"; }
+            else if (isSel) { borderCol = COLORS.red; bg = "rgba(239,68,68,0.12)"; }
+          }
+          const badge = isRevealed ? (idx === correctIdx ? "✓" : (isSel ? "✗" : String.fromCharCode(65 + idx))) : String.fromCharCode(65 + idx);
+          const badgeBg = isRevealed ? (idx === correctIdx ? COLORS.green : (isSel ? COLORS.red : "transparent")) : (isSel ? COLORS.cyan : "transparent");
           return (
-            <button key={idx} onClick={() => choose(idx)} style={{
-              textAlign: "left", background: isSel ? COLORS.cardAlt : COLORS.card,
-              color: COLORS.text, border: `2px solid ${isSel ? COLORS.cyan : COLORS.border}`,
-              borderRadius: 10, padding: "12px 16px", cursor: "pointer", fontSize: 14, fontFamily: MONO,
+            <button key={idx} onClick={() => choose(idx)} disabled={isRevealed} style={{
+              textAlign: "left", background: bg, color: COLORS.text, border: `2px solid ${borderCol}`,
+              borderRadius: 10, padding: "12px 16px", cursor: isRevealed ? "default" : "pointer", fontSize: 14, fontFamily: MONO,
               display: "flex", alignItems: "center", gap: 10, transition: "border-color 0.15s, background 0.15s" }}>
-              <span style={{ width: 22, height: 22, flexShrink: 0, borderRadius: "50%", border: `2px solid ${isSel ? COLORS.cyan : COLORS.border}`,
-                background: isSel ? COLORS.cyan : "transparent", color: COLORS.bg, fontWeight: 700, fontSize: 12,
-                display: "flex", alignItems: "center", justifyContent: "center" }}>{String.fromCharCode(65 + idx)}</span>
+              <span style={{ width: 22, height: 22, flexShrink: 0, borderRadius: "50%", border: `2px solid ${borderCol}`,
+                background: badgeBg, color: COLORS.bg, fontWeight: 700, fontSize: 12,
+                display: "flex", alignItems: "center", justifyContent: "center" }}>{badge}</span>
               {o.text}
             </button>
           );
         })}
       </div>
+
+      {/* Explicación inmediata (modo estudio) */}
+      {isRevealed && (
+        <div style={{ background: `linear-gradient(135deg, ${COLORS.card}, ${COLORS.cardAlt})`, border: `1px solid ${COLORS.border}`,
+          borderRadius: 10, padding: "12px 14px", marginBottom: 16, animation: "pop 0.2s ease" }}>
+          <div style={{ color: selected === correctIdx ? COLORS.green : COLORS.red, fontWeight: 700, fontSize: 13, marginBottom: 4 }}>
+            {selected === correctIdx ? "¡Correcto! ✓" : "Incorrecto ✗"}
+          </div>
+          <div style={{ color: COLORS.text, fontSize: 13, lineHeight: 1.5 }}>{q.explanation}</div>
+        </div>
+      )}
 
       <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
         <button onClick={() => setCurrent(c => Math.max(0, c - 1))} disabled={current === 0}
@@ -867,18 +1024,27 @@ function ExamSimulator() {
         {current < 9 ? (
           <button onClick={() => setCurrent(c => Math.min(9, c + 1))} style={btnPrimary}>Siguiente →</button>
         ) : (
-          <button onClick={() => setPhase("results")} style={{ ...btnPrimary, background: COLORS.green }}>Finalizar examen</button>
+          <button onClick={finish} style={{ ...btnPrimary, background: COLORS.green }}>Finalizar examen</button>
         )}
       </div>
 
       <div style={{ display: "flex", flexWrap: "wrap", gap: 5, justifyContent: "center", marginTop: 16 }}>
-        {questions.map((_, i) => (
-          <button key={i} onClick={() => setCurrent(i)} title={`Ir a la pregunta ${i + 1}`} style={{
-            width: 26, height: 26, borderRadius: 6, fontSize: 11, fontFamily: MONO, cursor: "pointer",
-            border: `1px solid ${i === current ? COLORS.cyan : COLORS.border}`,
-            background: answers[i] != null ? COLORS.ev : COLORS.card,
-            color: answers[i] != null ? "#fff" : COLORS.textMuted, fontWeight: i === current ? 700 : 400 }}>{i + 1}</button>
-        ))}
+        {questions.map((_, i) => {
+          const ans = answers[i];
+          let bg = COLORS.card, col = COLORS.textMuted;
+          if (ans != null) {
+            if (quizMode === "study" && revealed[i]) {
+              const okk = questions[i].options[ans].correct;
+              bg = okk ? COLORS.green : COLORS.red; col = "#fff";
+            } else { bg = COLORS.ev; col = "#fff"; }
+          }
+          return (
+            <button key={i} onClick={() => setCurrent(i)} title={`Ir a la pregunta ${i + 1}`} style={{
+              width: 26, height: 26, borderRadius: 6, fontSize: 11, fontFamily: MONO, cursor: "pointer",
+              border: `1px solid ${i === current ? COLORS.cyan : COLORS.border}`,
+              background: bg, color: col, fontWeight: i === current ? 700 : 400 }}>{i + 1}</button>
+          );
+        })}
       </div>
 
       <div style={{ textAlign: "center", marginTop: 14 }}>
