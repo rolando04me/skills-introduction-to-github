@@ -1,0 +1,943 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>EVM · Playground + Simulador de Examen</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Space+Grotesk:wght@400;600;700&display=swap');
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: #0F172A; }
+  #root { min-height: 100vh; }
+  /* Keyframes used by the simulator */
+  @keyframes pop { from { transform: scale(0.96); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+</style>
+<!-- React + Babel desde CDN. Se cachean tras la primera carga (funciona offline después). -->
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" data-presets="react">
+const { useState, useRef, useCallback, useEffect, useMemo } = React;
+
+/* ============================================================
+ * Constantes y tema compartido
+ * ========================================================== */
+const PERIODS = 8;
+const BAC = 800;
+const baseIncrement = BAC / PERIODS;
+
+const COLORS = {
+  pv: "#6B7280",
+  ev: "#2563EB",
+  ac: "#DC2626",
+  bg: "#0F172A",
+  card: "#1E293B",
+  cardAlt: "#334155",
+  border: "#475569",
+  text: "#F1F5F9",
+  textMuted: "#94A3B8",
+  green: "#22C55E",
+  yellow: "#EAB308",
+  red: "#EF4444",
+  cyan: "#06B6D4",
+  purple: "#A78BFA",
+  orange: "#F97316",
+};
+
+const MONO = "'JetBrains Mono', monospace";
+const DISPLAY = "'Space Grotesk', sans-serif";
+
+function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
+
+/* ============================================================
+ * Helpers de interpretación / color (compartidos)
+ * ========================================================== */
+function statusColor(val, type) {
+  if (type === "index") {
+    if (val >= 1.0) return COLORS.green;
+    if (val >= 0.9) return COLORS.yellow;
+    return COLORS.red;
+  }
+  if (type === "variance") {
+    if (val > 0) return COLORS.green;
+    if (val === 0) return COLORS.yellow;
+    return COLORS.red;
+  }
+  if (type === "tcpi") {
+    if (val <= 1.0) return COLORS.green;
+    if (val <= 1.1) return COLORS.yellow;
+    return COLORS.red;
+  }
+  return COLORS.text;
+}
+
+function statusEmoji(val, type) {
+  if (type === "index") return val >= 1.0 ? "▲" : val >= 0.9 ? "►" : "▼";
+  if (type === "variance") return val > 0 ? "▲" : val === 0 ? "►" : "▼";
+  if (type === "tcpi") return val <= 1.0 ? "▲" : val <= 1.1 ? "►" : "▼";
+  return "";
+}
+
+function interpret(val, type) {
+  if (type === "cpi") {
+    if (val >= 1.05) return "Bajo presupuesto — obtienes más de $1 por cada $1 gastado";
+    if (val >= 0.95) return "En presupuesto — aprox. $1 por $1";
+    if (val >= 0.85) return "Sobre presupuesto — gastas más rápido de lo planeado";
+    return "Crisis — sobrecosto severo, recuperación poco probable";
+  }
+  if (type === "spi") {
+    if (val >= 1.05) return "Adelantado — generas valor más rápido de lo planeado";
+    if (val >= 0.95) return "En cronograma — avanzas al ritmo planeado";
+    if (val >= 0.85) return "Atrasado — te quedas detrás del plan";
+    return "Retraso crítico — significativamente atrasado";
+  }
+  if (type === "cv") {
+    if (val > 0) return `$${Math.abs(val).toFixed(0)} bajo presupuesto — superávit`;
+    if (val === 0) return "Exactamente en presupuesto";
+    return `$${Math.abs(val).toFixed(0)} sobre presupuesto — déficit`;
+  }
+  if (type === "sv") {
+    if (val > 0) return `$${Math.abs(val).toFixed(0)} de trabajo adelantado al cronograma`;
+    if (val === 0) return "Exactamente en cronograma";
+    return `$${Math.abs(val).toFixed(0)} de trabajo atrasado al cronograma`;
+  }
+  if (type === "eac") {
+    const diff = val - BAC;
+    if (diff <= 0) return `El proyecto terminará $${Math.abs(diff).toFixed(0)} bajo el presupuesto de $${BAC}`;
+    return `El proyecto costará $${diff.toFixed(0)} MÁS que el presupuesto de $${BAC}`;
+  }
+  if (type === "vac") {
+    if (val > 0) return `Superávit esperado de $${val.toFixed(0)} al completar`;
+    if (val === 0) return "Se espera terminar exactamente en presupuesto";
+    return `Sobrecosto esperado de $${Math.abs(val).toFixed(0)} al completar`;
+  }
+  if (type === "tcpi") {
+    if (val <= 0.95) return "Margen cómodo — el desempeño pasado ya alcanzó lo necesario";
+    if (val <= 1.0) return "Alcanzable — mantén la eficiencia actual";
+    if (val <= 1.1) return "Meta exigente — hay que apretar de aquí en adelante";
+    if (val <= 1.2) return "Empuje duro — mejora la eficiencia notablemente";
+    return "Casi imposible — requeriría eficiencia sobrehumana";
+  }
+  return "";
+}
+
+/* ============================================================
+ * Geometría del gráfico
+ * ========================================================== */
+const CHART_W = 700;
+const CHART_H = 340;
+const PAD = { top: 30, right: 30, bottom: 50, left: 65 };
+const plotW = CHART_W - PAD.left - PAD.right;
+const plotH = CHART_H - PAD.top - PAD.bottom;
+
+function xPos(i) { return PAD.left + (i / (PERIODS - 1)) * plotW; }
+function yPos(v, maxY) { return PAD.top + plotH - (v / maxY) * plotH; }
+function valFromY(py, maxY) {
+  const ratio = (PAD.top + plotH - py) / plotH;
+  return ratio * maxY;
+}
+
+/* Convierte una coordenada de cliente (ratón/táctil) a un valor del eje Y,
+ * redondeado a 5 y acotado al rango válido. */
+function valueFromClientY(clientY, svg, maxY) {
+  const pt = svg.createSVGPoint();
+  pt.x = 0;
+  pt.y = clientY;
+  const svgP = pt.matrixTransform(svg.getScreenCTM().inverse());
+  const raw = valFromY(svgP.y, maxY);
+  return clamp(Math.round(raw / 5) * 5, 0, maxY - 50);
+}
+
+/* Aplica "no-decrecimiento acumulado" alrededor del índice editado.
+ * Las series PV/EV deben ser monótonas crecientes. */
+function enforceMonotonic(arr, idx) {
+  for (let i = idx + 1; i < arr.length; i++) {
+    if (arr[i] < arr[i - 1]) arr[i] = arr[i - 1];
+  }
+  for (let i = idx - 1; i >= 0; i--) {
+    if (arr[i] > arr[i + 1]) arr[i] = arr[i + 1];
+  }
+  return arr;
+}
+
+function generateDefaults() {
+  const pv = [], ev = [], ac = [];
+  for (let i = 0; i < PERIODS; i++) {
+    const cumPV = baseIncrement * (i + 1);
+    pv.push(cumPV);
+    ev.push(cumPV);
+    ac.push(cumPV);
+  }
+  return { pv, ev, ac };
+}
+
+/* ============================================================
+ * Métrica (tarjeta) del playground
+ * ========================================================== */
+function Metric({ label, value, fmt, type, formula }) {
+  const col = statusColor(value, type);
+  const arrow = statusEmoji(value, type);
+  const interp = interpret(value, type);
+  const display = fmt === "$" ? `$${value.toFixed(0)}` : value.toFixed(2);
+
+  return (
+    <div style={{ background: COLORS.card, borderRadius: 10, padding: "10px 14px", borderLeft: `3px solid ${col}`, minWidth: 0 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 2 }}>
+        <span style={{ color: COLORS.textMuted, fontSize: 11, fontWeight: 600, letterSpacing: "0.05em", textTransform: "uppercase" }}>{label}</span>
+        <span style={{ color: COLORS.textMuted, fontSize: 10, fontFamily: MONO }}>{formula}</span>
+      </div>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+        <span style={{ color: col, fontSize: 22, fontWeight: 700, fontFamily: MONO }}>{display}</span>
+        <span style={{ color: col, fontSize: 14 }}>{arrow}</span>
+      </div>
+      <div style={{ color: COLORS.textMuted, fontSize: 10, marginTop: 4, lineHeight: 1.3, minHeight: 26 }}>{interp}</div>
+    </div>
+  );
+}
+
+/* ============================================================
+ * PLAYGROUND (optimizado: Pointer Events + useMemo)
+ * ========================================================== */
+function EVMPlayground() {
+  const [data, setData] = useState(generateDefaults);
+  const [dragging, setDragging] = useState(null);
+  const [period, setPeriod] = useState(PERIODS - 1);
+  const [hoveredPoint, setHoveredPoint] = useState(null);
+  const svgRef = useRef(null);
+
+  const maxY = useMemo(
+    () => Math.max(BAC * 1.5, ...data.pv, ...data.ev, ...data.ac) + 50,
+    [data]
+  );
+
+  /* Métricas derivadas — memoizadas en [data, period] */
+  const m = useMemo(() => {
+    const cumPV = data.pv[period];
+    const cumEV = data.ev[period];
+    const cumAC = data.ac[period];
+    const cpi = cumAC !== 0 ? cumEV / cumAC : 0;
+    const spi = cumPV !== 0 ? cumEV / cumPV : 0;
+    const cv = cumEV - cumAC;
+    const sv = cumEV - cumPV;
+    const eac = cpi !== 0 ? BAC / cpi : Infinity;
+    const etc = eac - cumAC;
+    const vac = BAC - eac;
+    const tcpiBac = (BAC - cumEV) !== 0 && (BAC - cumAC) !== 0 ? (BAC - cumEV) / (BAC - cumAC) : 0;
+    const pctComplete = BAC !== 0 ? (cumEV / BAC) * 100 : 0;
+    return { cumPV, cumEV, cumAC, cpi, spi, cv, sv, eac, etc, vac, tcpiBac, pctComplete };
+  }, [data, period]);
+
+  const { cumPV, cumEV, cumAC, cpi, spi, cv, sv, eac, etc, vac, tcpiBac, pctComplete } = m;
+
+  /* --- Arrastre unificado con Pointer Events (ratón + táctil) --- */
+  const applyDrag = useCallback((clientY) => {
+    if (!svgRef.current || !dragging) return;
+    const newVal = valueFromClientY(clientY, svgRef.current, maxY);
+    setData(prev => {
+      const series = [...prev[dragging.series]];
+      series[dragging.idx] = newVal;
+      if (dragging.series === "pv" || dragging.series === "ev") {
+        enforceMonotonic(series, dragging.idx);
+      }
+      return { ...prev, [dragging.series]: series };
+    });
+  }, [dragging, maxY]);
+
+  const handlePointerDown = useCallback((series, idx, e) => {
+    e.preventDefault();
+    setDragging({ series, idx });
+  }, []);
+
+  useEffect(() => {
+    if (!dragging) return;
+    const onMove = (e) => applyDrag(e.clientY);
+    const onUp = () => setDragging(null);
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+    };
+  }, [dragging, applyDrag]);
+
+  const makePath = useCallback(
+    (arr) => arr.map((v, i) => `${i === 0 ? "M" : "L"} ${xPos(i)} ${yPos(v, maxY)}`).join(" "),
+    [maxY]
+  );
+
+  const gridLines = useMemo(() => {
+    const lines = [];
+    const ySteps = 6;
+    for (let i = 0; i <= ySteps; i++) {
+      const val = (maxY / ySteps) * i;
+      const y = yPos(val, maxY);
+      lines.push(
+        <g key={`g-${i}`}>
+          <line x1={PAD.left} x2={CHART_W - PAD.right} y1={y} y2={y} stroke={COLORS.border} strokeWidth={0.5} strokeDasharray="4 4" opacity={0.4} />
+          <text x={PAD.left - 8} y={y + 4} fill={COLORS.textMuted} fontSize={10} textAnchor="end" fontFamily={MONO}>${Math.round(val)}</text>
+        </g>
+      );
+    }
+    return lines;
+  }, [maxY]);
+
+  const seriesConfig = [
+    { key: "pv", color: COLORS.pv, label: "PV (Valor Planeado)", dash: "6 3" },
+    { key: "ev", color: COLORS.ev, label: "EV (Valor Ganado)", dash: "" },
+    { key: "ac", color: COLORS.ac, label: "AC (Costo Real)", dash: "" },
+  ];
+
+  const eacLineY = yPos(clamp(eac, 0, maxY), maxY);
+  const reset = () => setData(generateDefaults());
+
+  const scenarios = [
+    { label: "Sobrecosto", desc: "AC 40% sobre lo planeado — clásico desborde de presupuesto",
+      apply: () => { const d = generateDefaults(); d.ac = d.ac.map(v => Math.round(v * 1.4)); setData(d); } },
+    { label: "Atrasado", desc: "EV se queda 30% bajo PV — el trabajo no se completa",
+      apply: () => { const d = generateDefaults(); d.ev = d.ev.map(v => Math.round(v * 0.7)); setData(d); } },
+    { label: "Un mal período", desc: "El AC del período 4 se dispara — siente la cascada",
+      apply: () => { const d = generateDefaults(); for (let i = 3; i < PERIODS; i++) d.ac[i] += 250; setData(d); } },
+    { label: "Recuperación", desc: "Adelantado Y bajo presupuesto",
+      apply: () => { const d = generateDefaults(); d.ev = d.ev.map(v => Math.round(v * 1.15)); d.ev[PERIODS - 1] = BAC; d.ac = d.ac.map(v => Math.round(v * 0.85)); setData(d); } },
+  ];
+
+  return (
+    <div>
+      <div style={{ marginBottom: 20, textAlign: "center" }}>
+        <h2 style={{ fontFamily: DISPLAY, fontSize: 22, fontWeight: 700, margin: 0, letterSpacing: "-0.02em",
+          background: `linear-gradient(135deg, ${COLORS.cyan}, ${COLORS.ev})`, WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>
+          EVM Playground
+        </h2>
+        <p style={{ color: COLORS.textMuted, fontSize: 13, margin: "4px 0 0" }}>
+          Arrastra cualquier punto para cambiar un valor. Mira reaccionar cada fórmula.
+        </p>
+        <p style={{ color: COLORS.textMuted, fontSize: 11, margin: "2px 0 0", opacity: 0.7 }}>
+          BAC = ${BAC} &nbsp;|&nbsp; {PERIODS} períodos &nbsp;|&nbsp; Viendo hasta Período {period + 1}
+        </p>
+      </div>
+
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "center", marginBottom: 14 }}>
+        <button onClick={reset} style={{ background: COLORS.cardAlt, color: COLORS.textMuted, border: `1px solid ${COLORS.border}`,
+          borderRadius: 6, padding: "5px 12px", fontSize: 11, cursor: "pointer", fontWeight: 600 }}>Reiniciar</button>
+        {scenarios.map(s => (
+          <button key={s.label} onClick={s.apply} title={s.desc} style={{ background: COLORS.card, color: COLORS.text, border: `1px solid ${COLORS.border}`,
+            borderRadius: 6, padding: "5px 12px", fontSize: 11, cursor: "pointer", fontWeight: 500 }}>{s.label}</button>
+        ))}
+      </div>
+
+      <div style={{ background: COLORS.card, borderRadius: 12, padding: 12, marginBottom: 14, border: `1px solid ${COLORS.border}` }}>
+        <svg ref={svgRef} viewBox={`0 0 ${CHART_W} ${CHART_H}`}
+          style={{ width: "100%", height: "auto", cursor: dragging ? "grabbing" : "default", touchAction: "none" }}>
+          {gridLines}
+          {Array.from({ length: PERIODS }, (_, i) => (
+            <text key={`xl-${i}`} x={xPos(i)} y={CHART_H - PAD.bottom + 20} fill={period === i ? COLORS.cyan : COLORS.textMuted}
+              fontSize={11} textAnchor="middle" fontFamily={MONO} fontWeight={period === i ? 700 : 400}>P{i + 1}</text>
+          ))}
+          <text x={CHART_W / 2} y={CHART_H - 4} fill={COLORS.textMuted} fontSize={10} textAnchor="middle">Período del Proyecto</text>
+          <text x={14} y={CHART_H / 2} fill={COLORS.textMuted} fontSize={10} textAnchor="middle" transform={`rotate(-90 14 ${CHART_H / 2})`}>$ Acumulado</text>
+
+          <line x1={PAD.left} x2={CHART_W - PAD.right} y1={yPos(BAC, maxY)} y2={yPos(BAC, maxY)} stroke={COLORS.purple} strokeWidth={1} strokeDasharray="8 4" opacity={0.6} />
+          <text x={CHART_W - PAD.right + 4} y={yPos(BAC, maxY) + 4} fill={COLORS.purple} fontSize={9} fontFamily={MONO}>BAC</text>
+
+          {isFinite(eac) && eac > 0 && eac < maxY && (
+            <>
+              <line x1={PAD.left} x2={CHART_W - PAD.right} y1={eacLineY} y2={eacLineY} stroke={COLORS.orange} strokeWidth={1} strokeDasharray="4 4" opacity={0.5} />
+              <text x={CHART_W - PAD.right + 4} y={eacLineY + 4} fill={COLORS.orange} fontSize={9} fontFamily={MONO}>EAC</text>
+            </>
+          )}
+
+          <rect x={xPos(period) - 12} y={PAD.top} width={24} height={plotH} fill={COLORS.cyan} opacity={0.06} rx={4} />
+          <line x1={xPos(period)} x2={xPos(period)} y1={PAD.top} y2={PAD.top + plotH} stroke={COLORS.cyan} strokeWidth={1} opacity={0.3} strokeDasharray="3 3" />
+
+          {seriesConfig.map(s => (
+            <path key={s.key} d={makePath(data[s.key])} fill="none" stroke={s.color} strokeWidth={2.5} strokeDasharray={s.dash} strokeLinejoin="round" strokeLinecap="round" />
+          ))}
+
+          {seriesConfig.map(s => data[s.key].map((v, i) => {
+            const cx = xPos(i), cy = yPos(v, maxY);
+            const isHovered = hoveredPoint?.series === s.key && hoveredPoint?.idx === i;
+            const isDrag = dragging?.series === s.key && dragging?.idx === i;
+            return (
+              <g key={`${s.key}-${i}`}>
+                <circle cx={cx} cy={cy} r={16} fill="transparent" style={{ cursor: "grab" }}
+                  onPointerDown={(e) => handlePointerDown(s.key, i, e)}
+                  onPointerEnter={() => setHoveredPoint({ series: s.key, idx: i })}
+                  onPointerLeave={() => setHoveredPoint(null)} />
+                <circle cx={cx} cy={cy} r={isDrag ? 8 : isHovered ? 7 : 5} fill={isDrag ? "#fff" : s.color}
+                  stroke={isDrag ? s.color : "none"} strokeWidth={2}
+                  style={{ transition: isDrag ? "none" : "r 0.15s", pointerEvents: "none" }} />
+                {(isHovered || isDrag) && (
+                  <g>
+                    <rect x={cx - 28} y={cy - 28} width={56} height={18} rx={4} fill={COLORS.bg} opacity={0.9} />
+                    <text x={cx} y={cy - 15} fill="#fff" fontSize={10} textAnchor="middle" fontFamily={MONO} fontWeight={600}>${Math.round(v)}</text>
+                  </g>
+                )}
+              </g>
+            );
+          }))}
+
+          {seriesConfig.map((s, idx) => (
+            <g key={`leg-${s.key}`} transform={`translate(${PAD.left + idx * 180}, ${PAD.top - 16})`}>
+              <line x1={0} x2={20} y1={0} y2={0} stroke={s.color} strokeWidth={2.5} strokeDasharray={s.dash} />
+              <circle cx={10} cy={0} r={3.5} fill={s.color} />
+              <text x={26} y={4} fill={COLORS.textMuted} fontSize={10}>{s.label}</text>
+            </g>
+          ))}
+        </svg>
+      </div>
+
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16, padding: "0 4px" }}>
+        <span style={{ color: COLORS.textMuted, fontSize: 11, whiteSpace: "nowrap" }}>Ver Período:</span>
+        <input type="range" min={0} max={PERIODS - 1} value={period} onChange={e => setPeriod(+e.target.value)} style={{ flex: 1, accentColor: COLORS.cyan }} />
+        <span style={{ fontFamily: MONO, fontSize: 13, fontWeight: 700, color: COLORS.cyan, background: COLORS.card, padding: "2px 10px", borderRadius: 6 }}>P{period + 1}</span>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 6, marginBottom: 14, padding: "0 4px" }}>
+        {[
+          { label: "BAC", val: BAC, col: COLORS.purple },
+          { label: "PV", val: cumPV, col: COLORS.pv },
+          { label: "EV", val: cumEV, col: COLORS.ev },
+          { label: "AC", val: cumAC, col: COLORS.ac },
+        ].map(r => (
+          <div key={r.label} style={{ background: COLORS.card, borderRadius: 8, padding: "6px 10px", borderTop: `2px solid ${r.col}`, textAlign: "center" }}>
+            <div style={{ color: COLORS.textMuted, fontSize: 9, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.08em" }}>{r.label}</div>
+            <div style={{ color: r.col, fontSize: 18, fontWeight: 700, fontFamily: MONO }}>${r.val.toFixed(0)}</div>
+          </div>
+        ))}
+      </div>
+
+      <div style={{ background: COLORS.card, borderRadius: 10, padding: "8px 14px", marginBottom: 14, border: `1px solid ${COLORS.border}` }}>
+        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+          <span style={{ color: COLORS.textMuted, fontSize: 10, fontWeight: 600, textTransform: "uppercase" }}>% Completado (EV/BAC)</span>
+          <span style={{ color: COLORS.cyan, fontSize: 13, fontWeight: 700, fontFamily: MONO }}>{pctComplete.toFixed(1)}%</span>
+        </div>
+        <div style={{ background: COLORS.bg, borderRadius: 6, height: 10, overflow: "hidden" }}>
+          <div style={{ width: `${clamp(pctComplete, 0, 100)}%`, height: "100%", background: `linear-gradient(90deg, ${COLORS.ev}, ${COLORS.cyan})`, borderRadius: 6, transition: "width 0.2s" }} />
+        </div>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 8, marginBottom: 14 }}>
+        <Metric label="CPI" value={cpi} fmt="#" type="index" formula="EV / AC" />
+        <Metric label="SPI" value={spi} fmt="#" type="index" formula="EV / PV" />
+        <Metric label="CV" value={cv} fmt="$" type="variance" formula="EV − AC" />
+        <Metric label="SV" value={sv} fmt="$" type="variance" formula="EV − PV" />
+        <Metric label="EAC" value={isFinite(eac) ? eac : 0} fmt="$" type="eac" formula="BAC / CPI" />
+        <Metric label="ETC" value={isFinite(etc) ? etc : 0} fmt="$" type="eac" formula="EAC − AC" />
+        <Metric label="VAC" value={isFinite(vac) ? vac : 0} fmt="$" type="variance" formula="BAC − EAC" />
+        <Metric label="TCPI" value={isFinite(tcpiBac) ? tcpiBac : 0} fmt="#" type="tcpi" formula="(BAC−EV)/(BAC−AC)" />
+      </div>
+
+      <div style={{ background: `linear-gradient(135deg, ${COLORS.card}, ${COLORS.cardAlt})`, borderRadius: 12, padding: 16, border: `1px solid ${COLORS.border}` }}>
+        <div style={{ color: COLORS.cyan, fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 8 }}>Qué está pasando</div>
+        <div style={{ color: COLORS.text, fontSize: 13, lineHeight: 1.6 }}>
+          {cpi >= 0.95 && cpi <= 1.05 && spi >= 0.95 && spi <= 1.05 && (
+            <span>El proyecto sigue el plan de cerca. Costo y cronograma están dentro del 5% de la línea base. Estado sano — pero arrastra un punto de AC hacia arriba y mira qué rápido cambia.</span>
+          )}
+          {cpi < 0.95 && spi >= 0.95 && (
+            <span>Estás gastando más de lo que ganas. Un CPI de {cpi.toFixed(2)} significa que por cada $1 gastado el proyecto solo entrega ${cpi.toFixed(2)} de valor. A este ritmo costará <strong style={{ color: COLORS.orange }}>${isFinite(eac) ? eac.toFixed(0) : "∞"}</strong> en vez de ${BAC}. El TCPI de {isFinite(tcpiBac) ? tcpiBac.toFixed(2) : "∞"} te dice qué tan eficiente tendrías que ser de aquí en adelante para aún terminar en presupuesto.</span>
+          )}
+          {spi < 0.95 && cpi >= 0.95 && (
+            <span>El problema es el cronograma — un SPI de {spi.toFixed(2)} significa que el trabajo avanza solo al {(spi * 100).toFixed(0)}% del ritmo planeado. No estás gastando de más, simplemente no se completa suficiente. Suele indicar falta de recursos o alcance subestimado.</span>
+          )}
+          {cpi < 0.95 && spi < 0.95 && (
+            <span>Doble problema — costo Y cronograma están mal. CPI {cpi.toFixed(2)} y SPI {spi.toFixed(2)} juntos llevan el EAC a <strong style={{ color: COLORS.red }}>${isFinite(eac) ? eac.toFixed(0) : "∞"}</strong>. Aquí importa el EAC con CPI×SPI: AC + (BAC−EV)/(CPI×SPI) = ${isFinite(cumAC + (BAC - cumEV) / (cpi * spi)) ? (cumAC + (BAC - cumEV) / (cpi * spi)).toFixed(0) : "∞"}. Es aún peor porque ambos problemas se acumulan.</span>
+          )}
+          {cpi > 1.05 && spi > 1.05 && (
+            <span>Adelantado en ambos frentes — entregas más valor con menos dinero. CPI {cpi.toFixed(2)} y SPI {spi.toFixed(2)} indican que terminará bajo presupuesto y antes de tiempo. El TCPI de {isFinite(tcpiBac) ? tcpiBac.toFixed(2) : "∞"} está bajo 1.0: puedes relajar la eficiencia futura.</span>
+          )}
+          {cpi > 1.05 && spi < 0.95 && (
+            <span>Eficiente pero lento — gastas con sabiduría pero no avanzas suficientemente rápido. Obtienes más de $1 de valor por dólar, pero el ritmo está atrasado. Podría ser un equipo meticuloso pero con poco personal.</span>
+          )}
+          {spi > 1.05 && cpi < 0.95 && (
+            <span>Rápido pero caro — el trabajo va adelantado pero cuesta más de lo planeado. Podría ser horas extra, recursos premium o comprimir el cronograma a propósito.</span>
+          )}
+        </div>
+      </div>
+
+      <div style={{ textAlign: "center", marginTop: 16, color: COLORS.textMuted, fontSize: 10, opacity: 0.5 }}>
+        EVM Playground — Arrastra los puntos para explorar. Prueba "Un mal período" para sentir la cascada.
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+ * GENERADOR DE PREGUNTAS (aleatorio)
+ * ========================================================== */
+function randInt(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
+function pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
+function shuffle(arr) {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+function round2(x) { return Math.round(x * 100) / 100; }
+function money(x) { return `$${Math.round(x).toLocaleString("en-US")}`; }
+
+/* Genera un escenario base con números manejables. */
+function makeScenario(diff) {
+  // BAC múltiplo de 100; valores derivados con eficiencias controladas.
+  const bac = randInt(4, 20) * 100; // 400..2000
+  const pctPlan = pick([0.25, 0.375, 0.5, 0.625, 0.75]); // fracción planeada del proyecto
+  const pv = Math.round(bac * pctPlan / 10) * 10;
+  // factor de cronograma (EV vs PV) y de costo (AC vs EV) según dificultad
+  const schedFactors = diff <= 1 ? [0.8, 0.9, 1.0, 1.1, 1.2] : [0.75, 0.85, 0.95, 1.05, 1.15, 1.25];
+  const costFactors  = diff <= 1 ? [0.8, 0.9, 1.0, 1.1, 1.25] : [0.7, 0.8, 0.9, 1.0, 1.15, 1.3];
+  const ev = Math.max(10, Math.round(pv * pick(schedFactors) / 10) * 10);
+  const ac = Math.max(10, Math.round(ev * pick(costFactors) / 10) * 10);
+  return { bac, pv, ev, ac };
+}
+
+/* Construye una pregunta de opción múltiple a partir de un campo objetivo. */
+function buildMC({ scenario, prompt, correct, fmt, distractors, explanation }) {
+  const fmtFn = fmt === "$" ? money : (v) => round2(v).toFixed(2);
+  const correctStr = fmtFn(correct);
+  const seen = new Set([correctStr]);
+  const opts = [{ text: correctStr, correct: true }];
+  for (const d of distractors) {
+    const s = fmtFn(d);
+    if (!seen.has(s) && isFinite(d)) { seen.add(s); opts.push({ text: s, correct: false }); }
+    if (opts.length >= 4) break;
+  }
+  // Rellenar si faltan opciones (perturbaciones del valor correcto)
+  let guard = 0;
+  while (opts.length < 4 && guard++ < 50) {
+    const delta = fmt === "$" ? randInt(-30, 30) * 10 : (randInt(-40, 40) / 100);
+    const cand = fmt === "$" ? correct + delta : Math.max(0.01, correct + delta);
+    const s = fmtFn(cand);
+    if (!seen.has(s)) { seen.add(s); opts.push({ text: s, correct: false }); }
+  }
+  return { scenario, prompt, explanation, options: shuffle(opts) };
+}
+
+/* Tipos de cálculo disponibles. */
+const CALC_TYPES = {
+  CV: (s) => {
+    const v = s.ev - s.ac;
+    return buildMC({ scenario: s, fmt: "$",
+      prompt: `Con EV = ${money(s.ev)} y AC = ${money(s.ac)}, ¿cuál es la Variación de Costo (CV)?`,
+      correct: v,
+      distractors: [s.ac - s.ev, s.ev - s.pv, s.pv - s.ev, -(s.ev - s.ac), s.ev + s.ac],
+      explanation: `CV = EV − AC = ${money(s.ev)} − ${money(s.ac)} = ${money(v)}. ${v >= 0 ? "Positivo → bajo presupuesto." : "Negativo → sobre presupuesto."}` });
+  },
+  SV: (s) => {
+    const v = s.ev - s.pv;
+    return buildMC({ scenario: s, fmt: "$",
+      prompt: `Con EV = ${money(s.ev)} y PV = ${money(s.pv)}, ¿cuál es la Variación de Cronograma (SV)?`,
+      correct: v,
+      distractors: [s.pv - s.ev, s.ev - s.ac, s.ac - s.ev, -(s.ev - s.pv), s.ev + s.pv],
+      explanation: `SV = EV − PV = ${money(s.ev)} − ${money(s.pv)} = ${money(v)}. ${v >= 0 ? "Positivo → adelantado." : "Negativo → atrasado."}` });
+  },
+  CPI: (s) => {
+    const v = s.ev / s.ac;
+    return buildMC({ scenario: s, fmt: "#",
+      prompt: `Con EV = ${money(s.ev)} y AC = ${money(s.ac)}, ¿cuál es el Índice de Desempeño de Costo (CPI)?`,
+      correct: v,
+      distractors: [s.ac / s.ev, s.ev / s.pv, s.pv / s.ev, v + 0.1, v - 0.1],
+      explanation: `CPI = EV / AC = ${money(s.ev)} / ${money(s.ac)} = ${round2(v).toFixed(2)}. ${v >= 1 ? "≥1 → eficiente en costo." : "<1 → sobre presupuesto."}` });
+  },
+  SPI: (s) => {
+    const v = s.ev / s.pv;
+    return buildMC({ scenario: s, fmt: "#",
+      prompt: `Con EV = ${money(s.ev)} y PV = ${money(s.pv)}, ¿cuál es el Índice de Desempeño de Cronograma (SPI)?`,
+      correct: v,
+      distractors: [s.pv / s.ev, s.ev / s.ac, s.ac / s.ev, v + 0.1, v - 0.1],
+      explanation: `SPI = EV / PV = ${money(s.ev)} / ${money(s.pv)} = ${round2(v).toFixed(2)}. ${v >= 1 ? "≥1 → adelantado/en plan." : "<1 → atrasado."}` });
+  },
+  EAC: (s) => {
+    const cpi = s.ev / s.ac;
+    const v = s.bac / cpi;
+    return buildMC({ scenario: s, fmt: "$",
+      prompt: `BAC = ${money(s.bac)}, EV = ${money(s.ev)}, AC = ${money(s.ac)}. Asumiendo que el desempeño actual continúa, ¿cuál es la Estimación a la Conclusión (EAC)?`,
+      correct: v,
+      distractors: [s.bac * cpi, s.bac - s.ac, s.ac + (s.bac - s.ev), s.bac, v + 100, v - 100],
+      explanation: `EAC = BAC / CPI. CPI = EV/AC = ${round2(cpi).toFixed(2)}; EAC = ${money(s.bac)} / ${round2(cpi).toFixed(2)} = ${money(v)}.` });
+  },
+  ETC: (s) => {
+    const cpi = s.ev / s.ac;
+    const eac = s.bac / cpi;
+    const v = eac - s.ac;
+    return buildMC({ scenario: s, fmt: "$",
+      prompt: `BAC = ${money(s.bac)}, EV = ${money(s.ev)}, AC = ${money(s.ac)}. ¿Cuál es la Estimación hasta la Conclusión (ETC) usando EAC = BAC/CPI?`,
+      correct: v,
+      distractors: [eac + s.ac, s.bac - s.ac, s.ac - eac, s.bac - s.ev, v + 100, v - 100],
+      explanation: `ETC = EAC − AC. CPI = ${round2(cpi).toFixed(2)}; EAC = ${money(eac)}; ETC = ${money(eac)} − ${money(s.ac)} = ${money(v)}.` });
+  },
+  VAC: (s) => {
+    const cpi = s.ev / s.ac;
+    const eac = s.bac / cpi;
+    const v = s.bac - eac;
+    return buildMC({ scenario: s, fmt: "$",
+      prompt: `BAC = ${money(s.bac)}, EV = ${money(s.ev)}, AC = ${money(s.ac)}. ¿Cuál es la Variación a la Conclusión (VAC) con EAC = BAC/CPI?`,
+      correct: v,
+      distractors: [eac - s.bac, s.bac - s.ac, s.ev - s.ac, eac, v + 100, v - 100],
+      explanation: `VAC = BAC − EAC. CPI = ${round2(cpi).toFixed(2)}; EAC = ${money(eac)}; VAC = ${money(s.bac)} − ${money(eac)} = ${money(v)}. ${v >= 0 ? "Positivo → superávit." : "Negativo → sobrecosto."}` });
+  },
+  TCPI: (s) => {
+    const v = (s.bac - s.ev) / (s.bac - s.ac);
+    if (!isFinite(v) || s.bac - s.ac <= 0) return CALC_TYPES.CPI(s); // evita degenerados
+    return buildMC({ scenario: s, fmt: "#",
+      prompt: `BAC = ${money(s.bac)}, EV = ${money(s.ev)}, AC = ${money(s.ac)}. ¿Cuál es el Índice de Desempeño del Trabajo por Completar (TCPI) para cumplir el BAC?`,
+      correct: v,
+      distractors: [(s.bac - s.ac) / (s.bac - s.ev), s.ev / s.ac, (s.bac - s.ev) / (s.bac - s.ev + s.ac), v + 0.1, v - 0.1],
+      explanation: `TCPI = (BAC − EV) / (BAC − AC) = (${money(s.bac)} − ${money(s.ev)}) / (${money(s.bac)} − ${money(s.ac)}) = ${round2(v).toFixed(2)}. ${v <= 1 ? "≤1 → alcanzable." : ">1 → exige mayor eficiencia."}` });
+  },
+};
+
+/* Preguntas conceptuales / de interpretación (también con valores variables). */
+const CONCEPT_TYPES = {
+  FORMULA: () => {
+    const bank = [
+      { q: "¿Cuál es la fórmula de la Variación de Costo (CV)?", a: "EV − AC", d: ["AC − EV", "EV − PV", "EV / AC"] },
+      { q: "¿Cuál es la fórmula de la Variación de Cronograma (SV)?", a: "EV − PV", d: ["PV − EV", "EV − AC", "EV / PV"] },
+      { q: "¿Cuál es la fórmula del CPI?", a: "EV / AC", d: ["AC / EV", "EV / PV", "EV − AC"] },
+      { q: "¿Cuál es la fórmula del SPI?", a: "EV / PV", d: ["PV / EV", "EV / AC", "EV − PV"] },
+      { q: "¿Cuál es la fórmula típica del EAC (desempeño continúa)?", a: "BAC / CPI", d: ["BAC × CPI", "BAC − AC", "AC − BAC"] },
+      { q: "¿Cuál es la fórmula del ETC (desde el EAC)?", a: "EAC − AC", d: ["AC − EAC", "BAC − AC", "BAC − EV"] },
+      { q: "¿Cuál es la fórmula del VAC?", a: "BAC − EAC", d: ["EAC − BAC", "BAC − AC", "EV − AC"] },
+      { q: "¿Cuál es la fórmula del TCPI (sobre BAC)?", a: "(BAC − EV) / (BAC − AC)", d: ["(BAC − AC) / (BAC − EV)", "EV / AC", "(BAC − EV) / (EAC − AC)"] },
+    ];
+    const item = pick(bank);
+    const options = shuffle([{ text: item.a, correct: true }, ...item.d.map(t => ({ text: t, correct: false }))]);
+    return { scenario: null, prompt: item.q, options, explanation: `La fórmula correcta es: ${item.a}.` };
+  },
+  MEANING: () => {
+    const cpi = pick([0.7, 0.8, 0.9, 1.1, 1.2]);
+    const correct = cpi < 1
+      ? "Sobre presupuesto: por cada $1 gastado se obtiene menos de $1 de valor"
+      : "Bajo presupuesto: por cada $1 gastado se obtiene más de $1 de valor";
+    const distractors = [
+      "Atrasado en el cronograma",
+      "Adelantado en el cronograma",
+      cpi < 1 ? "Bajo presupuesto: surplus de costo" : "Sobre presupuesto: déficit de costo",
+    ];
+    const options = shuffle([{ text: correct, correct: true }, ...distractors.slice(0, 3).map(t => ({ text: t, correct: false }))]);
+    return { scenario: null, prompt: `Un CPI = ${cpi.toFixed(1)}, ¿qué significa?`, options,
+      explanation: `El CPI mide eficiencia de COSTO (no cronograma). ${cpi < 1 ? "CPI < 1 → sobre presupuesto." : "CPI > 1 → bajo presupuesto."}` };
+  },
+  STATUS: () => {
+    const s = makeScenario(1);
+    const overBudget = s.ac > s.ev;
+    const behind = s.ev < s.pv;
+    let correct;
+    if (overBudget && behind) correct = "Sobre presupuesto y atrasado";
+    else if (overBudget && !behind) correct = "Sobre presupuesto pero adelantado/en plan";
+    else if (!overBudget && behind) correct = "Bajo presupuesto pero atrasado";
+    else correct = "Bajo presupuesto y adelantado/en plan";
+    const all = [
+      "Sobre presupuesto y atrasado",
+      "Sobre presupuesto pero adelantado/en plan",
+      "Bajo presupuesto pero atrasado",
+      "Bajo presupuesto y adelantado/en plan",
+    ];
+    const options = all.map(t => ({ text: t, correct: t === correct }));
+    return { scenario: s, prompt: `EV = ${money(s.ev)}, AC = ${money(s.ac)}, PV = ${money(s.pv)}. ¿Cómo está el proyecto?`,
+      options: shuffle(options),
+      explanation: `Costo: compara EV vs AC → ${overBudget ? "AC > EV = sobre presupuesto" : "EV ≥ AC = bajo/en presupuesto"}. Cronograma: compara EV vs PV → ${behind ? "EV < PV = atrasado" : "EV ≥ PV = en plan/adelantado"}.` };
+  },
+};
+
+/* Pools de tipos por dificultad. */
+const POOLS = {
+  1: ["CV", "SV", "CPI", "SPI", "CONCEPT_FORMULA", "CONCEPT_MEANING"],
+  2: ["CPI", "SPI", "EAC", "ETC", "VAC", "CONCEPT_MEANING", "CONCEPT_STATUS"],
+  3: ["EAC", "ETC", "VAC", "TCPI", "CONCEPT_STATUS", "CV", "SV", "CPI", "SPI"],
+};
+
+function generateOne(diff) {
+  const pool = POOLS[diff] || POOLS[1];
+  const type = pick(pool);
+  if (type === "CONCEPT_FORMULA") return CONCEPT_TYPES.FORMULA();
+  if (type === "CONCEPT_MEANING") return CONCEPT_TYPES.MEANING();
+  if (type === "CONCEPT_STATUS") return CONCEPT_TYPES.STATUS();
+  return CALC_TYPES[type](makeScenario(diff));
+}
+
+/* Genera 10 preguntas para un nivel. Para "Simulacro Final" mezcla dificultades. */
+function generateQuiz(levelId) {
+  const out = [];
+  for (let i = 0; i < 10; i++) {
+    let diff;
+    if (levelId === "final") diff = i < 3 ? 1 : i < 7 ? 2 : 3;
+    else diff = levelId;
+    let q = generateOne(diff);
+    out.push(q);
+  }
+  return out;
+}
+
+const LEVELS = [
+  { id: 1, name: "Nivel 1 · Fundamentos", color: COLORS.green, desc: "Varianzas e índices (CV, SV, CPI, SPI). Un paso, distractores claros." },
+  { id: 2, name: "Nivel 2 · Intermedio", color: COLORS.yellow, desc: "Pronósticos (EAC, ETC, VAC) + interpretación." },
+  { id: 3, name: "Nivel 3 · Avanzado", color: COLORS.orange, desc: "Todas las fórmulas incl. TCPI, escenarios y trampas." },
+  { id: "final", name: "Simulacro Final", color: COLORS.purple, desc: "10 preguntas mezcladas de todos los niveles. ¡El examen!" },
+];
+
+/* ============================================================
+ * SIMULADOR DE EXAMEN
+ * ========================================================== */
+function fmtTime(sec) {
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return `${m}:${s.toString().padStart(2, "0")}`;
+}
+
+function ExamSimulator() {
+  const [phase, setPhase] = useState("menu"); // menu | quiz | results
+  const [level, setLevel] = useState(null);
+  const [questions, setQuestions] = useState([]);
+  const [current, setCurrent] = useState(0);
+  const [answers, setAnswers] = useState([]); // índice de opción elegida por pregunta
+  const [elapsed, setElapsed] = useState(0);
+  const timerRef = useRef(null);
+
+  const startLevel = (lvl) => {
+    setLevel(lvl);
+    setQuestions(generateQuiz(lvl.id));
+    setAnswers(new Array(10).fill(null));
+    setCurrent(0);
+    setElapsed(0);
+    setPhase("quiz");
+  };
+
+  // Temporizador
+  useEffect(() => {
+    if (phase === "quiz") {
+      timerRef.current = setInterval(() => setElapsed(e => e + 1), 1000);
+      return () => clearInterval(timerRef.current);
+    }
+  }, [phase]);
+
+  const choose = (optIdx) => {
+    setAnswers(prev => {
+      const copy = [...prev];
+      copy[current] = optIdx;
+      return copy;
+    });
+  };
+
+  const score = useMemo(() => {
+    if (phase !== "results") return 0;
+    return questions.reduce((acc, q, i) => acc + (answers[i] != null && q.options[answers[i]].correct ? 1 : 0), 0);
+  }, [phase, questions, answers]);
+
+  const answeredCount = answers.filter(a => a != null).length;
+
+  /* ---------- MENÚ ---------- */
+  if (phase === "menu") {
+    return (
+      <div>
+        <div style={{ marginBottom: 18, textAlign: "center" }}>
+          <h2 style={{ fontFamily: DISPLAY, fontSize: 22, fontWeight: 700, margin: 0, letterSpacing: "-0.02em",
+            background: `linear-gradient(135deg, ${COLORS.cyan}, ${COLORS.purple})`, WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>
+            Simulador de Examen EVM
+          </h2>
+          <p style={{ color: COLORS.textMuted, fontSize: 13, margin: "4px 0 0" }}>
+            Elige un nivel. 10 preguntas aleatorias por intento — práctica infinita.
+          </p>
+        </div>
+        <div style={{ display: "grid", gap: 10 }}>
+          {LEVELS.map(lvl => (
+            <button key={lvl.id} onClick={() => startLevel(lvl)} style={{
+              textAlign: "left", background: COLORS.card, color: COLORS.text, border: `1px solid ${COLORS.border}`,
+              borderLeft: `4px solid ${lvl.color}`, borderRadius: 10, padding: "14px 16px", cursor: "pointer" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span style={{ fontFamily: DISPLAY, fontSize: 16, fontWeight: 700, color: lvl.color }}>{lvl.name}</span>
+                <span style={{ fontSize: 11, color: COLORS.textMuted, fontFamily: MONO }}>10 preguntas →</span>
+              </div>
+              <div style={{ color: COLORS.textMuted, fontSize: 12, marginTop: 4 }}>{lvl.desc}</div>
+            </button>
+          ))}
+        </div>
+        <div style={{ marginTop: 16, padding: "10px 14px", background: COLORS.card, borderRadius: 10, border: `1px dashed ${COLORS.border}` }}>
+          <div style={{ color: COLORS.cyan, fontSize: 11, fontWeight: 700, textTransform: "uppercase", marginBottom: 6 }}>Cómo funciona</div>
+          <div style={{ color: COLORS.textMuted, fontSize: 12, lineHeight: 1.6 }}>
+            Responde las 10 preguntas (opción múltiple). Al final ves tu puntaje, aprobado/reprobado (umbral 70%)
+            y la explicación paso a paso de cada una. Reintenta para generar 10 preguntas nuevas.
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  /* ---------- RESULTADOS ---------- */
+  if (phase === "results") {
+    const pct = Math.round((score / 10) * 100);
+    const passed = pct >= 70;
+    return (
+      <div style={{ animation: "pop 0.25s ease" }}>
+        <div style={{ textAlign: "center", marginBottom: 16 }}>
+          <div style={{ fontFamily: DISPLAY, fontSize: 14, color: COLORS.textMuted }}>{level.name}</div>
+          <div style={{ fontFamily: MONO, fontSize: 48, fontWeight: 700, color: passed ? COLORS.green : COLORS.red, lineHeight: 1.1 }}>
+            {score}/10
+          </div>
+          <div style={{ fontSize: 16, fontWeight: 700, color: passed ? COLORS.green : COLORS.red }}>
+            {pct}% · {passed ? "APROBADO ✓" : "REPROBADO ✗"}
+          </div>
+          <div style={{ fontSize: 12, color: COLORS.textMuted, marginTop: 4 }}>Tiempo: {fmtTime(elapsed)}</div>
+        </div>
+
+        <div style={{ background: COLORS.bg, borderRadius: 6, height: 12, overflow: "hidden", marginBottom: 18 }}>
+          <div style={{ width: `${pct}%`, height: "100%", background: passed ? COLORS.green : COLORS.red, transition: "width 0.4s" }} />
+        </div>
+
+        <div style={{ display: "grid", gap: 8, marginBottom: 16 }}>
+          {questions.map((q, i) => {
+            const a = answers[i];
+            const correctIdx = q.options.findIndex(o => o.correct);
+            const ok = a != null && q.options[a].correct;
+            return (
+              <div key={i} style={{ background: COLORS.card, borderRadius: 10, padding: "10px 14px", borderLeft: `3px solid ${ok ? COLORS.green : COLORS.red}` }}>
+                <div style={{ display: "flex", gap: 8, alignItems: "baseline" }}>
+                  <span style={{ color: ok ? COLORS.green : COLORS.red, fontWeight: 700, fontFamily: MONO, fontSize: 13 }}>{ok ? "✓" : "✗"} {i + 1}.</span>
+                  <span style={{ color: COLORS.text, fontSize: 13 }}>{q.prompt}</span>
+                </div>
+                <div style={{ fontSize: 12, marginTop: 6, marginLeft: 22, lineHeight: 1.5 }}>
+                  <div style={{ color: COLORS.green }}>Correcta: {q.options[correctIdx].text}</div>
+                  {!ok && <div style={{ color: COLORS.red }}>Tu respuesta: {a != null ? q.options[a].text : "— (sin responder)"}</div>}
+                  <div style={{ color: COLORS.textMuted, marginTop: 4 }}>{q.explanation}</div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        <div style={{ display: "flex", gap: 8, justifyContent: "center" }}>
+          <button onClick={() => startLevel(level)} style={btnPrimary}>Reintentar (nuevas preguntas)</button>
+          <button onClick={() => setPhase("menu")} style={btnSecondary}>Cambiar nivel</button>
+        </div>
+      </div>
+    );
+  }
+
+  /* ---------- QUIZ ---------- */
+  const q = questions[current];
+  const selected = answers[current];
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+        <span style={{ fontFamily: DISPLAY, fontSize: 14, fontWeight: 700, color: level.color }}>{level.name}</span>
+        <span style={{ fontFamily: MONO, fontSize: 13, color: COLORS.cyan, background: COLORS.card, padding: "2px 10px", borderRadius: 6 }}>⏱ {fmtTime(elapsed)}</span>
+      </div>
+
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: COLORS.textMuted, marginBottom: 6 }}>
+        <span>Pregunta {current + 1} / 10</span>
+        <span>{answeredCount}/10 respondidas</span>
+      </div>
+      <div style={{ background: COLORS.bg, borderRadius: 6, height: 8, overflow: "hidden", marginBottom: 16 }}>
+        <div style={{ width: `${((current + 1) / 10) * 100}%`, height: "100%", background: `linear-gradient(90deg, ${COLORS.ev}, ${COLORS.cyan})`, transition: "width 0.2s" }} />
+      </div>
+
+      <div style={{ background: COLORS.card, borderRadius: 12, padding: "16px 18px", marginBottom: 14, border: `1px solid ${COLORS.border}`, minHeight: 70 }}>
+        <div style={{ color: COLORS.text, fontSize: 15, lineHeight: 1.5 }}>{q.prompt}</div>
+      </div>
+
+      <div style={{ display: "grid", gap: 8, marginBottom: 16 }}>
+        {q.options.map((o, idx) => {
+          const isSel = selected === idx;
+          return (
+            <button key={idx} onClick={() => choose(idx)} style={{
+              textAlign: "left", background: isSel ? COLORS.cardAlt : COLORS.card,
+              color: COLORS.text, border: `2px solid ${isSel ? COLORS.cyan : COLORS.border}`,
+              borderRadius: 10, padding: "12px 16px", cursor: "pointer", fontSize: 14, fontFamily: MONO,
+              display: "flex", alignItems: "center", gap: 10, transition: "border-color 0.15s, background 0.15s" }}>
+              <span style={{ width: 22, height: 22, flexShrink: 0, borderRadius: "50%", border: `2px solid ${isSel ? COLORS.cyan : COLORS.border}`,
+                background: isSel ? COLORS.cyan : "transparent", color: COLORS.bg, fontWeight: 700, fontSize: 12,
+                display: "flex", alignItems: "center", justifyContent: "center" }}>{String.fromCharCode(65 + idx)}</span>
+              {o.text}
+            </button>
+          );
+        })}
+      </div>
+
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+        <button onClick={() => setCurrent(c => Math.max(0, c - 1))} disabled={current === 0}
+          style={{ ...btnSecondary, opacity: current === 0 ? 0.4 : 1, cursor: current === 0 ? "not-allowed" : "pointer" }}>← Anterior</button>
+        {current < 9 ? (
+          <button onClick={() => setCurrent(c => Math.min(9, c + 1))} style={btnPrimary}>Siguiente →</button>
+        ) : (
+          <button onClick={() => setPhase("results")} style={{ ...btnPrimary, background: COLORS.green }}>Finalizar examen</button>
+        )}
+      </div>
+
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 5, justifyContent: "center", marginTop: 16 }}>
+        {questions.map((_, i) => (
+          <button key={i} onClick={() => setCurrent(i)} title={`Ir a la pregunta ${i + 1}`} style={{
+            width: 26, height: 26, borderRadius: 6, fontSize: 11, fontFamily: MONO, cursor: "pointer",
+            border: `1px solid ${i === current ? COLORS.cyan : COLORS.border}`,
+            background: answers[i] != null ? COLORS.ev : COLORS.card,
+            color: answers[i] != null ? "#fff" : COLORS.textMuted, fontWeight: i === current ? 700 : 400 }}>{i + 1}</button>
+        ))}
+      </div>
+
+      <div style={{ textAlign: "center", marginTop: 14 }}>
+        <button onClick={() => setPhase("menu")} style={{ background: "none", border: "none", color: COLORS.textMuted, fontSize: 11, cursor: "pointer", textDecoration: "underline" }}>
+          Abandonar y volver al menú
+        </button>
+      </div>
+    </div>
+  );
+}
+
+const btnPrimary = {
+  background: COLORS.ev, color: "#fff", border: "none", borderRadius: 8,
+  padding: "10px 18px", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: DISPLAY,
+};
+const btnSecondary = {
+  background: COLORS.cardAlt, color: COLORS.text, border: `1px solid ${COLORS.border}`,
+  borderRadius: 8, padding: "10px 18px", fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: DISPLAY,
+};
+
+/* ============================================================
+ * APP — toggle entre Explorar y Examen
+ * ========================================================== */
+function App() {
+  const [mode, setMode] = useState("exam"); // exam | play
+
+  return (
+    <div style={{ fontFamily: "'Segoe UI', system-ui, sans-serif", background: COLORS.bg, color: COLORS.text, minHeight: "100vh", padding: "20px 16px" }}>
+      <div style={{ maxWidth: 780, margin: "0 auto" }}>
+        <h1 style={{ fontFamily: DISPLAY, fontSize: 26, fontWeight: 700, textAlign: "center", margin: "0 0 4px",
+          background: `linear-gradient(135deg, ${COLORS.cyan}, ${COLORS.purple})`, WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>
+          EVM · Examen + Playground
+        </h1>
+        <p style={{ textAlign: "center", color: COLORS.textMuted, fontSize: 12, margin: "0 0 16px" }}>
+          Practica para tu examen de Valor Ganado (PMP).
+        </p>
+
+        <div style={{ display: "flex", gap: 6, justifyContent: "center", marginBottom: 22 }}>
+          {[
+            { id: "exam", label: "📝 Examen" },
+            { id: "play", label: "🎮 Explorar" },
+          ].map(t => (
+            <button key={t.id} onClick={() => setMode(t.id)} style={{
+              background: mode === t.id ? COLORS.ev : COLORS.card,
+              color: mode === t.id ? "#fff" : COLORS.textMuted,
+              border: `1px solid ${mode === t.id ? COLORS.ev : COLORS.border}`,
+              borderRadius: 999, padding: "8px 22px", fontSize: 14, fontWeight: 700, cursor: "pointer", fontFamily: DISPLAY }}>
+              {t.label}
+            </button>
+          ))}
+        </div>
+
+        {mode === "exam" ? <ExamSimulator /> : <EVMPlayground />}
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
